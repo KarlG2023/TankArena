@@ -7,19 +7,29 @@ public class Mine : NetworkBehaviour
     [SyncVar(hook = nameof(HandleColorChanged))]
     Color color = Color.red;
 
+    [SyncVar(hook = nameof(HandleIsAlive))]
+    bool isAlive = true;
+
+    [SerializeField] private GameObject explosionPrefab = null;
+    [SerializeField] private AudioSource explosion;
 
     private MyPlayerNetwork owner;
+    private GameObject effect = null;
 
     private void Start()
     {
-        // StartCoroutine(DestroyMineAfter5Sec());
+
     }
 
-    // private IEnumerator DestroyMineAfter5Sec()
-    // {
-    //     yield return new WaitForSeconds(5);
-    //     NetworkServer.Destroy(gameObject);
-    // }
+    private IEnumerator DestroyMine()
+    {
+        this.isAlive = false;
+
+        yield return new WaitForSeconds(1f);
+
+        NetworkServer.Destroy(effect);
+        NetworkServer.Destroy(gameObject);
+    }
 
     #region Server
 
@@ -49,10 +59,13 @@ public class Mine : NetworkBehaviour
 
         if (other.TryGetComponent<MyPlayerNetwork>(out var player))
         {
-            if (player != owner)
+            if (player != owner && isAlive == true)
             {
-                player.TRPCCollideMine(player.connectionToClient, "You died");
-                NetworkServer.Destroy(gameObject);
+                player.SetHealth(-80f);
+                effect = Instantiate(explosionPrefab, transform.position, Quaternion.identity);
+                explosion.Play();
+                NetworkServer.Spawn(effect);
+                StartCoroutine(DestroyMine());
             }
         }
     }
@@ -67,6 +80,18 @@ public class Mine : NetworkBehaviour
         if (TryGetComponent<MeshRenderer>(out var meshRenderer))
         {
             meshRenderer.material.color = newColor;
+        }
+    }
+
+    [Client]
+    private void HandleIsAlive(bool oldValue, bool newValue)
+    {
+        if (newValue == false) {
+            MeshRenderer meshRenderer = GetComponent<MeshRenderer>();
+            if (meshRenderer != null)
+            {
+                meshRenderer.enabled = false;
+            }
         }
     }
 

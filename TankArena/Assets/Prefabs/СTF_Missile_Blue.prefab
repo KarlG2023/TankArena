@@ -122,6 +122,7 @@ MonoBehaviour:
   explosionPrefab: {fileID: 8481716727371010991, guid: ab93be6f339569a4787fc45205fc4e33,
     type: 3}
   speed: 10
+  growthTime: 1
 --- !u!65 &5516391226008151319
 BoxCollider:
   m_ObjectHideFlags: 0

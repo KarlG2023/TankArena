@@ -7,16 +7,19 @@ public class Missile : NetworkBehaviour
     [SyncVar(hook = nameof(HandleColorChanged))]
     Color color = Color.red;
 
+    [SyncVar(hook = nameof(HandleIsAlive))]
+    bool isAlive = true;
+
     [SerializeField] private GameObject explosionPrefab = null;
     [SerializeField] private float speed = 10f;
     [SerializeField] private float growthTime = 1.0f;
+
     private MyPlayerNetwork owner;
     private bool hasCollided = false;
 
     private void Start()
     {
         StartCoroutine(GrowMissile());
-        StartCoroutine(DestroyMissile(10));
     }
 
     private IEnumerator GrowMissile()
@@ -59,6 +62,7 @@ public class Missile : NetworkBehaviour
 
         yield return new WaitForSeconds(Mathf.Max(blastPS.main.duration, smokePS.main.duration, sparklePS.main.duration));
         NetworkServer.Destroy(explosion);
+        yield return new WaitForSeconds(2);
         NetworkServer.Destroy(gameObject);
     }
 
@@ -80,6 +84,7 @@ public class Missile : NetworkBehaviour
     public void setOwner(MyPlayerNetwork owner)
     {
         this.owner = owner;
+        StartCoroutine(DestroyMissile(10));
     }
 
     [ServerCallback]
@@ -91,8 +96,8 @@ public class Missile : NetworkBehaviour
         if (!other.CompareTag("Player"))
         {
             hasCollided = true;
+            this.isAlive = false;
             StartCoroutine(DestroyMissile(0));
-            // NetworkServer.Destroy(gameObject);
             return;
         }
 
@@ -100,10 +105,10 @@ public class Missile : NetworkBehaviour
         {
             if (player != owner)
             {
-            hasCollided = true;
-            StartCoroutine(DestroyMissile(0));
-            player.TRPCCollideMissile(player.connectionToClient, "You died");
-            // NetworkServer.Destroy(gameObject);
+                hasCollided = true;
+                this.isAlive = false;
+                StartCoroutine(DestroyMissile(0));
+                player.SetHealth(-20f);
             }
         }
     }
@@ -121,10 +126,24 @@ public class Missile : NetworkBehaviour
         }
     }
 
+    [Client]
+    private void HandleIsAlive(bool oldValue, bool newValue)
+    {
+        if (newValue == false) {
+            MeshRenderer meshRenderer = GetComponent<MeshRenderer>();
+            if (meshRenderer != null)
+            {
+                meshRenderer.enabled = false;
+            }
+        }
+    }
+
     [ClientCallback]
     private void Update()
     {
-        transform.position += transform.forward * speed * Time.deltaTime;
+        if (this.isAlive == true) {
+            transform.position += transform.forward * speed * Time.deltaTime;
+        }
     }
 
     #endregion

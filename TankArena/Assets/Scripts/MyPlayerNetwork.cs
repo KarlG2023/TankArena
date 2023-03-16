@@ -21,9 +21,6 @@ public class MyPlayerNetwork : NetworkBehaviour
     [SyncVar(hook = nameof(HandleAvailableMinesChanged))]
     int nbrMines = 1;
 
-    [SyncVar(hook = nameof(HandleAvailableMissilesChanged))]
-    int nbrMissiles = 10;
-
     [SyncVar(hook = nameof(HandleShootCouldownChanged))]
     float ShootCouldown = 2;
 
@@ -33,39 +30,57 @@ public class MyPlayerNetwork : NetworkBehaviour
     // Only client variables
     [SerializeField] private UnityEvent<string> onPseudoChanged;
     [SerializeField] private UnityEvent<int> onAvailableMinesChanged;
-    [SerializeField] private UnityEvent<int> onAvailableMissilesChanged;
     [SerializeField] private UnityEvent<float> onShootCouldownChanged;
     [SerializeField] private UnityEvent<float> onHealthChanged;
     [SerializeField] private GameObject minePrefab = null;
     [SerializeField] private GameObject missilePrefab = null;
-    [SerializeField] private GameObject shootCouldownEffectPrefab = null;
-    [SerializeField] private GameObject HealthEffectPrefab = null;
+    [SerializeField] private GameObject powerUpEffectPrefab = null;
     [SerializeField] private Camera tankCamera = null;
 
-    private float lastMissileFiredTime = 0.0f;
     private Vector3 movementDirection;
     private Vector3 pointOnTurret;
     private Quaternion targetRotation;
+    private float lastMissileFiredTime = 0.0f;
 
     public override void OnStartLocalPlayer()
     {
         tankCamera = Camera.main;
     }
 
-    private IEnumerator FadeAndDestroy(GameObject obj, float delay)
+    private IEnumerator Mastodont(float duration, float newHealth, float mastodontScaleFactor)
     {
-        Renderer renderer = obj.GetComponent<Renderer>();
-        Color color = renderer.material.color;
+        this.Health += newHealth;
 
-        // fade the object over time
-        for (float t = 1.0f; t > 0.0f; t -= Time.deltaTime / delay)
+        float t = 0;
+        while (t < 1)
         {
-            color.a = t;
-            renderer.material.color = color;
+            t += Time.deltaTime / 1f; // Increase t by 1 every second
+            transform.localScale = Vector3.Lerp(new Vector3(1.0f, 1.0f, 1.0f), new Vector3(1.0f, 1.0f, 1.0f) * mastodontScaleFactor, t);
             yield return null;
         }
 
-        Destroy(obj); // destroy the object after fading
+        yield return new WaitForSeconds(duration-2);
+
+        t = 0;
+        while (t < 1)
+        {
+            t += Time.deltaTime / 1f;
+            transform.localScale = Vector3.Lerp(new Vector3(1.0f, 1.0f, 1.0f) * mastodontScaleFactor, new Vector3(1.0f, 1.0f, 1.0f), t);
+            yield return null;
+        }
+
+        if (this.Health - newHealth <= 0) {
+            this.Health = 10;
+        } else {
+            this.Health -= newHealth;
+        }
+    }
+
+    private IEnumerator FireRateBuff(float duration, float newFireRate)
+    {
+        this.ShootCouldown += newFireRate;
+        yield return new WaitForSeconds(duration);
+        this.ShootCouldown -= newFireRate;
     }
 
     #region Server
@@ -97,36 +112,37 @@ public class MyPlayerNetwork : NetworkBehaviour
     }
 
     [Server]
-    public void SpawnMissile()
+    public void SetHealth(float newHealth)
     {
-        var missile = Instantiate(missilePrefab);
+        this.Health += newHealth;
 
-        if (transform.Find("TankFree_Tower").gameObject.TryGetComponent<MeshRenderer>(out var meshRenderer))
-        {
-            if (meshRenderer.transform.Find("TankFree_Canon").gameObject.TryGetComponent<MeshRenderer>(out var meshCanonRenderer))
-            {
-                Vector3 spawnPosition = meshCanonRenderer.transform.position;
-                float height = 0.1f;
+        if (this.Health <= 0) {
 
-                spawnPosition.y -= height;
-                missile.transform.rotation = turretRotation;
-                missile.transform.position = spawnPosition;
-
-                if (missile.TryGetComponent<Missile>(out var missileComponent))
-                {
-                    missileComponent.ChangeMeshColor(this.color);
-                    missileComponent.setOwner(this);
-                }
-
-                this.nbrMissiles = this.nbrMissiles - 1;
-                NetworkServer.Spawn(missile);
-            }
         }
+    }
+
+    [Server]
+    public void SetMines(int newValue)
+    {
+        this.nbrMines += newValue;
+    }
+
+    [Server]
+    public void SetFireRate(float newFireRate, float duration)
+    {
+        StartCoroutine(FireRateBuff(duration, newFireRate));
+    }
+
+    [Server]
+    public void ActivateMastodont(float health, float duration)
+    {
+        StartCoroutine(Mastodont(duration, health, 1.5f));
     }
 
     [Command]
     public void CmdMoveTo(float horizontalInput, float verticalInput)
     {
+        if (this.Health <= 0) return;
         movementDirection = new Vector3(horizontalInput, 0.0f, verticalInput).normalized;
         transform.Translate(movementDirection * 5.0f * Time.deltaTime);
 
@@ -152,6 +168,7 @@ public class MyPlayerNetwork : NetworkBehaviour
     [Command]
     public void CmdRotateTankTurret(Vector3 pointOnTurret)
     {
+        if (this.Health <= 0) return;
         if (transform.Find("TankFree_Tower").gameObject.TryGetComponent<MeshRenderer>(out var meshRenderer))
         {
             meshRenderer.transform.LookAt(pointOnTurret);
@@ -164,6 +181,8 @@ public class MyPlayerNetwork : NetworkBehaviour
     {
         if (minePrefab == null) return;
         if (this.nbrMines <= 0) return;
+        if (this.Health <= 0) return;
+
         var mine = Instantiate(minePrefab);
 
         // Calculate the position of the mine based on the rotation of the vehicle
@@ -182,18 +201,45 @@ public class MyPlayerNetwork : NetworkBehaviour
             mineComponent.setOwner(this);
         }
 
-        this.nbrMines = this.nbrMines - 1;
-        this.RPCDroppedAMine(this.pseudo, this.nbrMines);
+        SetMines(-1);
         NetworkServer.Spawn(mine);
+    }
+
+    [Server]
+    public void SpawnMissile()
+    {
+        if (missilePrefab == null) return;
+        var missile = Instantiate(missilePrefab);
+
+        if (transform.Find("TankFree_Tower").gameObject.TryGetComponent<MeshRenderer>(out var meshRenderer))
+        {
+            if (meshRenderer.transform.Find("TankFree_Canon").gameObject.TryGetComponent<MeshRenderer>(out var meshCanonRenderer))
+            {
+                Vector3 spawnPosition = meshCanonRenderer.transform.position;
+                float height = 0.2f;
+
+                spawnPosition.y -= height;
+                missile.transform.rotation = turretRotation;
+                missile.transform.position = spawnPosition;
+
+                if (missile.TryGetComponent<Missile>(out var missileComponent))
+                {
+                    missileComponent.ChangeMeshColor(this.color);
+                    missileComponent.setOwner(this);
+                }
+
+                NetworkServer.Spawn(missile);
+            }
+        }
     }
 
     [Command]
     public void CmdShoot()
     {
         if (missilePrefab == null) return;
-        if (this.nbrMissiles <= 0) return;
+        if (this.Health <= 0) return;
 
-        if (Time.time - lastMissileFiredTime < ShootCouldown)
+        if (Time.time - lastMissileFiredTime < this.ShootCouldown)
         {
             return;
         }
@@ -202,15 +248,30 @@ public class MyPlayerNetwork : NetworkBehaviour
         this.SpawnMissile();
     }
 
+    [Server]
+    public void SpawnEffectStatus(string type, float duration)
+    {
+        if (powerUpEffectPrefab == null) return;
+        var effect = Instantiate(powerUpEffectPrefab);
+
+        if (effect.TryGetComponent<PowerUpEffect>(out var effectComponent))
+        {
+            effectComponent.setOwner(this);
+            effectComponent.setDuration(type, duration);
+            effectComponent.setType(type);
+        }
+        NetworkServer.Spawn(effect);
+    }
+
+    [Command]
+    public void CmdShareEffectStatus(string type, float duration)
+    {
+        this.SpawnEffectStatus(type, duration);
+    }
+
     #endregion
 
     #region Client
-
-    [ClientRpc]
-    private void RPCDroppedAMine(string name, int quantity)
-    {
-        Debug.Log($"{name} dropped a mine ! He has {quantity} mines left !");
-    }
 
     [ClientRpc]
     private void RPCDisplayNewName(string oldName, string newName)
@@ -218,42 +279,11 @@ public class MyPlayerNetwork : NetworkBehaviour
         Debug.Log($"{newName} enters the game.");
     }
 
-    [TargetRpc]
-    public void TRPCCollideMine(NetworkConnection target, string message)
-    {
-        Debug.Log(message);
-    }
 
     [TargetRpc]
-    public void TRPCCollideMissile(NetworkConnection target, string message)
+    public void TRPCCollidePowerUp(NetworkConnection target, string type, float duration)
     {
-        Debug.Log(message);
-    }
-
-    [TargetRpc]
-    public void TRPCCollidePowerUp(NetworkConnection target, string message, string type, float value)
-    {
-        Debug.Log(message);
-        if (type == "ShootCouldown")
-        {
-            this.ShootCouldown += value;
-            GameObject shootCooldownEffect = Instantiate(shootCouldownEffectPrefab, transform.position, Quaternion.identity);
-            shootCooldownEffect.transform.parent = transform;
-            NetworkServer.Spawn(shootCooldownEffect);
-            StartCoroutine(FadeAndDestroy(shootCooldownEffect, 5f)); // start coroutine to fade and destroy the effect after 2 seconds
-        }
-        if (type == "Health")
-        {
-            if (this.Health + value > 100) {
-                this.Health = 100;
-            } else {
-                this.Health += value;
-            }
-            GameObject HealthEffect = Instantiate(HealthEffectPrefab, transform.position, Quaternion.identity);
-            HealthEffect.transform.parent = transform;
-            NetworkServer.Spawn(HealthEffect);
-            StartCoroutine(FadeAndDestroy(HealthEffect, 5f)); // start coroutine to fade and destroy the effect after 2 seconds
-        }
+        this.CmdShareEffectStatus(type, duration);
     }
 
     [Client]
@@ -294,12 +324,6 @@ public class MyPlayerNetwork : NetworkBehaviour
     }
 
     [Client]
-    private void HandleAvailableMissilesChanged(int oldQuantity, int newQuantity)
-    {
-        this.onAvailableMissilesChanged?.Invoke(newQuantity);
-    }
-
-    [Client]
     private void HandleShootCouldownChanged(float oldValue, float newValue)
     {
         this.onShootCouldownChanged?.Invoke(newValue);
@@ -308,7 +332,10 @@ public class MyPlayerNetwork : NetworkBehaviour
     [Client]
     private void HandleHealthChanged(float oldValue, float newValue)
     {
-        this.onShootCouldownChanged?.Invoke(newValue);
+        this.onHealthChanged?.Invoke(newValue);
+        if (newValue <= 0) {
+            GetComponent<Explosion>().enabled = true;
+        }
     }
 
     [ClientCallback]
